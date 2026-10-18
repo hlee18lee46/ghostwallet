@@ -13,7 +13,7 @@ export function Hero() {
         <div className="flex flex-col gap-6">
           <p className="inline-flex w-fit items-center gap-2 rounded-full border bg-card/60 px-3 py-1 text-sm font-semibold text-secondary">
             <span className="size-2 rounded-full bg-accent" aria-hidden />
-            Live on Solana mainnet
+            Live on Solana devnet
           </p>
           <h1 className="text-balance text-5xl leading-[1.05] font-bold md:text-7xl">
             {'Your wallet has a personality. '}
