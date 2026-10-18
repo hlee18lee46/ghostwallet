@@ -23,21 +23,26 @@ type MintStatus =
   | 'preparing'
   | 'signing'
   | 'confirming'
-  | 'saving'
   | 'success'
   | 'error'
+
+type JsonResult = Record<string, unknown>
 
 async function postJSON(
   url: string,
   payload: Record<string, unknown>,
-) {
+): Promise<JsonResult> {
   const response = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify(payload),
   })
 
-  const result = await response.json().catch(() => ({}))
+  const result: JsonResult = await response
+    .json()
+    .catch(() => ({}))
 
   if (!response.ok) {
     throw new Error(
@@ -73,12 +78,11 @@ export function MintDialog({
     ['Achievements', String(p.achievements.length)],
   ]
 
-  const busy = [
+  const busy: boolean = [
     'uploading',
     'preparing',
     'signing',
     'confirming',
-    'saving',
   ].includes(status)
 
   const statusLabels: Record<MintStatus, string> = {
@@ -87,75 +91,112 @@ export function MintDialog({
     preparing: 'Preparing NFT…',
     signing: 'Approve in Phantom…',
     confirming: 'Confirming on Solana…',
-    saving: 'Saving to gallery…',
     success: 'Minted successfully!',
     error: 'Try again',
   }
 
   async function mint() {
-    if (!publicKey || busy || status === 'success') return
+    if (!publicKey || busy || status === 'success') {
+      return
+    }
 
     setMessage(null)
     setSignature(null)
     setAssetAddress(null)
 
     let submittedSignature: string | null = null
-    let transactionConfirmed = false
 
     try {
-      // 1. Resolve the ghost image URL.
+      // ----------------------------------------
+      // 1. Resolve the ghost image
+      // ----------------------------------------
+
       const previewPath = shareCardPath(metrics, p)
 
       if (!previewPath) {
-        throw new Error('Ghost image is unavailable.')
+        throw new Error(
+          'Ghost image is unavailable.',
+        )
       }
 
-setStatus('uploading')
+      setStatus('uploading')
 
-// Upload the generated ghost image to IPFS.
-const uploadedImage = await postJSON('/api/nft/image', {
-  imagePath: previewPath,
-})
+      // ----------------------------------------
+      // 2. Upload the ghost image to Pinata/IPFS
+      // ----------------------------------------
 
-if (typeof uploadedImage.imageUrl !== 'string') {
-  throw new Error('Pinata did not return an image URL.')
-}
+      const uploadedImage = await postJSON(
+        '/api/nft/image',
+        {
+          imagePath: previewPath,
+        },
+      )
 
-const imageUrl = uploadedImage.imageUrl
-
-      const nftName = `GhostWallet: ${p.name}`.slice(0, 32)
-
-      const metadata = await postJSON('/api/nft/metadata', {
-        name: nftName,
-        description:
-          `A ${p.rarity} GhostWallet personality NFT. ` +
-          `Degen Score: ${p.degenScore}.`,
-        image: imageUrl,
-        attributes: attributes.map(([trait_type, value]) => ({
-          trait_type,
-          value,
-        })),
-      })
-
-      if (typeof metadata.metadataUri !== 'string') {
-        throw new Error('Metadata upload returned no URI.')
+      if (
+        typeof uploadedImage.imageUrl !== 'string'
+      ) {
+        throw new Error(
+          'Pinata did not return an image URL.',
+        )
       }
 
-      // 3. Prepare the partially signed Metaplex transaction.
+      const imageUrl = uploadedImage.imageUrl
+
+      // ----------------------------------------
+      // 3. Upload NFT metadata to Pinata/IPFS
+      // ----------------------------------------
+
+      const nftName =
+        `GhostWallet: ${p.name}`.slice(0, 32)
+
+      const metadata = await postJSON(
+        '/api/nft/metadata',
+        {
+          name: nftName,
+          description:
+            `A ${p.rarity} GhostWallet personality NFT. ` +
+            `Degen Score: ${p.degenScore}.`,
+          image: imageUrl,
+          attributes: attributes.map(
+            ([trait_type, value]) => ({
+              trait_type,
+              value,
+            }),
+          ),
+        },
+      )
+
+      if (
+        typeof metadata.metadataUri !== 'string'
+      ) {
+        throw new Error(
+          'Metadata upload returned no URI.',
+        )
+      }
+
+      // ----------------------------------------
+      // 4. Prepare the Metaplex Core NFT
+      // ----------------------------------------
+
       setStatus('preparing')
 
-      const prepared = await postJSON('/api/nft/prepare', {
-        walletAddress: publicKey.toBase58(),
-        name: nftName,
-        metadataUri: metadata.metadataUri,
-      })
+      const prepared = await postJSON(
+        '/api/nft/prepare',
+        {
+          walletAddress: publicKey.toBase58(),
+          name: nftName,
+          metadataUri: metadata.metadataUri,
+        },
+      )
 
       if (
         typeof prepared.transaction !== 'string' ||
         typeof prepared.assetAddress !== 'string' ||
         typeof prepared.lastValidBlockHeight !== 'number'
       ) {
-        throw new Error('Mint preparation returned invalid data.')
+        throw new Error(
+          'Mint preparation returned invalid data.',
+        )
       }
 
       setAssetAddress(prepared.assetAddress)
@@ -165,9 +206,13 @@ const imageUrl = uploadedImage.imageUrl
         (char) => char.charCodeAt(0),
       )
 
-      const transaction = VersionedTransaction.deserialize(bytes)
+      const transaction =
+        VersionedTransaction.deserialize(bytes)
 
-      // 4. Phantom signs and submits the transaction.
+      // ----------------------------------------
+      // 5. Phantom signs and submits transaction
+      // ----------------------------------------
+
       setStatus('signing')
 
       const txSignature = await sendTransaction(
@@ -182,46 +227,52 @@ const imageUrl = uploadedImage.imageUrl
       submittedSignature = txSignature
       setSignature(txSignature)
 
-      // 5. Confirm the mint on Solana.
+      // ----------------------------------------
+      // 6. Confirm transaction on Solana devnet
+      // ----------------------------------------
+
       setStatus('confirming')
 
-      const confirmation = await connection.confirmTransaction(
-        {
-          signature: txSignature,
-          blockhash: transaction.message.recentBlockhash,
-          lastValidBlockHeight: prepared.lastValidBlockHeight,
-        },
-        'confirmed',
-      )
+      const confirmation =
+        await connection.confirmTransaction(
+          {
+            signature: txSignature,
+            blockhash:
+              transaction.message.recentBlockhash,
+            lastValidBlockHeight:
+              prepared.lastValidBlockHeight,
+          },
+          'confirmed',
+        )
 
       if (confirmation.value.err) {
-        throw new Error('Solana mint transaction failed.')
+        throw new Error(
+          'Solana mint transaction failed.',
+        )
       }
 
-      transactionConfirmed = true
-
-      // 6. Save the confirmed NFT in the existing gallery.
-      setStatus('saving')
-
-      await postJSON('/api/gallery', {
-        mintAddress: prepared.assetAddress,
-        ownerWallet: publicKey.toBase58(),
-        transactionSignature: txSignature,
-        name: nftName,
-        description:
-          `A ${p.rarity} GhostWallet personality NFT.`,
-        imageUrl,
-        metadataUri: metadata.metadataUri,
-        personality: p.name,
-        mood: p.rarity,
-        degenScore: p.degenScore,
-        isShared: true,
-      })
+      // ----------------------------------------
+      // 7. Mint successful!
+      // No Gallery API or database required.
+      // ----------------------------------------
 
       setStatus('success')
-      setMessage('Your ghost NFT was minted and saved to the gallery!')
+
+      setMessage(
+        'Your GhostWallet NFT was minted successfully on Solana devnet! 👻',
+      )
+
+      console.log('[GhostWallet] NFT minted:', {
+        assetAddress: prepared.assetAddress,
+        transactionSignature: txSignature,
+        metadataUri: metadata.metadataUri,
+        imageUrl,
+      })
     } catch (error) {
-      console.error('Ghost NFT mint error:', error)
+      console.error(
+        '[GhostWallet] NFT mint error:',
+        error,
+      )
 
       setStatus('error')
 
@@ -230,15 +281,12 @@ const imageUrl = uploadedImage.imageUrl
           ? error.message
           : 'NFT minting failed.'
 
-      if (transactionConfirmed) {
+      if (submittedSignature) {
         setMessage(
-          `Your NFT was minted, but saving it to the gallery failed. ` +
-          `Do not mint again. ${reason}`,
-        )
-      } else if (submittedSignature) {
-        setMessage(
-          `Your transaction was submitted but its final status is ` +
-          `not yet confirmed. Check Solana Explorer before retrying. ${reason}`,
+          `Your transaction was submitted, but its final ` +
+            `status may need verification. ` +
+            `Check Solana Explorer before retrying. ` +
+            reason,
         )
       } else {
         setMessage(reason)
@@ -249,7 +297,11 @@ const imageUrl = uploadedImage.imageUrl
   return (
     <Dialog
       onOpenChange={(open) => {
-        if (!open && !busy && status !== 'success') {
+        if (
+          !open &&
+          !busy &&
+          status !== 'success'
+        ) {
           setStatus('idle')
           setMessage(null)
         }
@@ -262,16 +314,26 @@ const imageUrl = uploadedImage.imageUrl
 
       <DialogContent>
         <div className="flex flex-col gap-1.5 pr-8">
-          <DialogTitle>Mint your Ghost</DialogTitle>
+          <DialogTitle>
+            Mint your Ghost
+          </DialogTitle>
+
           <DialogDescription>
-            A one-of-one personality collectible on Solana devnet.
+            A one-of-one personality collectible
+            on Solana devnet.
           </DialogDescription>
         </div>
 
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={shareCardPath(metrics, p) || '/placeholder.svg'}
-          alt={`NFT preview: ${p.name} with a Degen Score of ${p.degenScore}`}
+          src={
+            shareCardPath(metrics, p) ||
+            '/placeholder.svg'
+          }
+          alt={
+            `NFT preview: ${p.name} ` +
+            `with a Degen Score of ${p.degenScore}`
+          }
           width={1200}
           height={630}
           className="aspect-[1200/630] w-full rounded-2xl border bg-muted"
@@ -286,7 +348,10 @@ const imageUrl = uploadedImage.imageUrl
               <dt className="text-xs text-muted-foreground">
                 {key}
               </dt>
-              <dd className="font-semibold">{value}</dd>
+
+              <dd className="font-semibold">
+                {value}
+              </dd>
             </div>
           ))}
         </dl>
@@ -294,13 +359,16 @@ const imageUrl = uploadedImage.imageUrl
         {metrics.isDemo ? (
           <p className="flex gap-2 rounded-2xl border border-dashed p-4 text-sm leading-relaxed text-muted-foreground">
             <Info className="mt-0.5 size-4 shrink-0" />
-            Demo wallets can be previewed but not minted.
+            Demo wallets can be previewed
+            but not minted.
           </p>
         ) : !publicKey ? (
           <div className="flex flex-col gap-3">
             <p className="text-sm text-muted-foreground">
-              Connect the wallet that should receive the NFT.
+              Connect the wallet that should
+              receive the NFT.
             </p>
+
             <ConnectButton className="h-12 justify-center" />
           </div>
         ) : (
@@ -308,7 +376,9 @@ const imageUrl = uploadedImage.imageUrl
             <button
               type="button"
               onClick={mint}
-              disabled={busy || status === 'success'}
+              disabled={
+                busy || status === 'success'
+              }
               className="btn-3d h-12 rounded-2xl bg-accent font-display text-lg font-semibold text-accent-foreground disabled:opacity-60"
             >
               {statusLabels[status]}
@@ -316,7 +386,11 @@ const imageUrl = uploadedImage.imageUrl
 
             {message && (
               <p
-                role={status === 'error' ? 'alert' : 'status'}
+                role={
+                  status === 'error'
+                    ? 'alert'
+                    : 'status'
+                }
                 className="flex gap-2 rounded-2xl bg-muted/60 p-3 text-sm leading-relaxed"
               >
                 <Info className="mt-0.5 size-4 shrink-0" />
@@ -326,7 +400,10 @@ const imageUrl = uploadedImage.imageUrl
 
             {signature && (
               <a
-                href={`https://explorer.solana.com/tx/${signature}?cluster=devnet`}
+                href={
+                  `https://explorer.solana.com/tx/` +
+                  `${signature}?cluster=devnet`
+                }
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-2 text-sm underline"
@@ -338,7 +415,10 @@ const imageUrl = uploadedImage.imageUrl
 
             {assetAddress && (
               <a
-                href={`https://explorer.solana.com/address/${assetAddress}?cluster=devnet`}
+                href={
+                  `https://explorer.solana.com/address/` +
+                  `${assetAddress}?cluster=devnet`
+                }
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-2 text-sm underline"
